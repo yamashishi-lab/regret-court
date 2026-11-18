@@ -1,4 +1,11 @@
+# 環境変数・認証情報
 .env
+
+# ログファイル
+*.log
+
+# Pythonのキャッシュや仮想環境
 __pycache__/
 venv/
-*.log
+.venv/
+*.pyc
