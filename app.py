@@ -1,112 +1,97 @@
-import streamlit as st
-import yfinance as yf
-import pandas as pd
-import plotly.graph_objects as go
+import os
+import logging
+from flask import Flask, request, jsonify
+from dotenv import load_dotenv
 
-# ページの設定
-st.set_page_config(
-    page_title="株式アルゴリズム＆シグナル分析アプリ",
-    page_icon="📈",
-    layout="wide"
+# .envファイルから環境変数を読み込む
+load_dotenv()
+
+# ログの詳細な設定（日付、ログレベル、メッセージを出力）
+logging.basicConfig(
+    filename='trading_bot.log',
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
 )
+# コンソールにもログを表示
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+logging.getLogger().addHandler(console_handler)
 
-st.title("📈 株式アルゴリズム＆シグナル分析アプリ")
-st.markdown("GitHubとStreamlitで構築した株価分析・シグナル検知ダッシュボードです。")
+app = Flask(__name__)
 
-# サイドバー：銘柄とパラメータの設定
-st.sidebar.header("⚙️ 設定パネル")
-ticker_symbol = st.sidebar.text_input("銘柄コード (日本株は末尾に .T)", "7203.T")
-short_window = st.sidebar.slider("短期移動平均線 (日)", 5, 50, 25)
-long_window = st.sidebar.slider("長期移動平均線 (日)", 20, 200, 75)
-period_option = st.sidebar.selectbox("取得期間", ["6mo", "1y", "2y", "5y"], index=1)
+# 環境変数からAPIキーなどを安全に取得
+API_KEY = os.getenv("BROKER_API_KEY", "dummy_key")
+SECRET_KEY = os.getenv("BROKER_SECRET_KEY", "dummy_secret")
+ENV_MODE = os.getenv("ENV_MODE", "paper")  # paper (仮想) または live (本番)
 
-# データの取得関数（キャッシュを利用して高速化）
-@st.cache_data
-def load_data(ticker, period):
+def execute_broker_order(symbol, action, qty):
+    """
+    証券会社APIを呼び出して実際に注文を執行する関数
+    ※各証券会社の公式SDKやAPIドキュメントに沿って中身を書き換えてください。
+    """
+    logging.info(f"[{ENV_MODE.upper}] 発注処理を実行中... 銘柄: {symbol}, 売買: {action}, 数量: {qty}")
+    
     try:
-        df = yf.download(ticker, period=period)
-        return df
+        # --- 【ここに証券会社のAPI連携コードを記述】 ---
+        # 例: Alpacaや各証券会社のクライアントを使った注文処理
+        # response = trading_client.submit_order(...)
+        
+        # 仮の成功レスポンス
+        simulated_order_id = "ORD-2026-99998888"
+        logging.info(f"【発注成功】 注文ID: {simulated_order_id}")
+        return True, {"order_id": simulated_order_id, "status": "filled"}
+        
     except Exception as e:
-        return None
+        logging.error(f"【発注失敗】 エラー内容: {str(e)}")
+        return False, {"error": str(e)}
 
-if ticker_symbol:
-    with st.spinner(f"{ticker_symbol} のデータを取得中..."):
-        data = load_data(ticker_symbol, period_option)
+@app.route("/health", methods=["GET"])
+def health_check():
+    """アプリが正常に稼働しているか確認用のエンドポイント"""
+    return jsonify({"status": "healthy", "mode": ENV_MODE}), 200
 
-    if data is not None and not data.empty:
-        # yfinanceの仕様変更（マルチインデックスカラム）への対策
-        if isinstance(data.columns, pd.MultiIndex):
-            data.columns = data.columns.get_level_values(0)
+@app.route("/signal", methods=["POST"])
+def webhook_signal():
+    """
+    分析アプリからのシグナルを受け取るメインのエンドポイント
+    期待するJSON形式:
+    {
+        "secret_token": "your_secure_webhook_token",
+        "symbol": "7203",
+        "action": "BUY",
+        "qty": 100
+    }
+    """
+    data = request.json
+    if not data:
+        logging.warning("不正なリクエスト: JSONデータが含まれていません")
+        return jsonify({"error": "Invalid JSON payload"}), 400
 
-        # 必要なカラムが存在するか確認
-        if 'Close' in data.columns:
-            # 移動平均線の計算
-            data['SMA_Short'] = data['Close'].rolling(window=short_window).mean()
-            data['SMA_Long'] = data['Close'].rolling(window=long_window).mean()
+    # 簡易的なセキュリティ認証（分析アプリ側と同じトークンを設定）
+    client_token = data.get("secret_token")
+    expected_token = os.getenv("WEBHOOK_SECRET_TOKEN", "default_secret")
+    if client_token != expected_token:
+        logging.warning("セキュリティ警告: 無効なWebhookトークンでのアクセス検知")
+        return jsonify({"error": "Unauthorized"}), 401
 
-            # 最新のデータ値
-            latest_close = float(data['Close'].iloc[-1])
-            prev_short = float(data['SMA_Short'].iloc[-2])
-            prev_long = float(data['SMA_Long'].iloc[-2])
-            curr_short = float(data['SMA_Short'].iloc[-1])
-            curr_long = float(data['SMA_Long'].iloc[-1])
+    symbol = data.get("symbol")
+    action = data.get("action")
+    qty = data.get("qty", 100)
 
-            # シグナル判定ロジック（ゴールデンクロス / デッドクロス）
-            signal = "様子見 (Hold) ⏳"
-            signal_color = "normal"
-            if prev_short <= prev_long and curr_short > curr_long:
-                signal = "買いシグナル (Buy) 🚀"
-                signal_color = "inverse"
-            elif prev_short >= prev_long and curr_short < curr_long:
-                signal = "売りシグナル (Sell) ⚠️"
-                signal_color = "off"
+    # パラメータのバリデーション
+    if not symbol or action not in ["BUY", "SELL"]:
+        logging.warning(f"パラメータエラー: symbol={symbol}, action={action}")
+        return jsonify({"error": "Missing 'symbol' or invalid 'action' (must be 'BUY' or 'SELL')"}), 400
 
-            # 画面上部への結果表示
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric(label="対象銘柄", value=ticker_symbol.upper())
-            with col2:
-                st.metric(label="判定シグナル", value=signal)
+    # 注文の実行
+    success, result = execute_broker_order(symbol, action, qty)
 
-            st.subheader("📊 株価チャート & 移動平均線")
-
-            # Plotlyによるインタラクティブなチャート描画
-            fig = go.Figure()
-            
-            # 終値ライン
-            fig.add_trace(go.Scatter(
-                x=data.index, y=data['Close'], 
-                name='終値 (Close)', 
-                line=dict(color='#29b5e8', width=1.5)
-            ))
-            # 短期移動平均線
-            fig.add_trace(go.Scatter(
-                x=data.index, y=data['SMA_Short'], 
-                name=f'短期 SMA ({short_window})', 
-                line=dict(color='#ffaa00', width=1.5)
-            ))
-            # 長期移動平均線
-            fig.add_trace(go.Scatter(
-                x=data.index, y=data['SMA_Long'], 
-                name=f'長期 SMA ({long_window})', 
-                line=dict(color='#ff4b4b', width=1.5)
-            ))
-            
-            fig.update_layout(
-                xaxis_title="日付",
-                yaxis_title="株価",
-                template="plotly_dark",
-                hovermode="x unified",
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-            )
-            
-            st.plotly_chart(fig, use_container_width=True)
-
-            # 生データのプレビュー（エキスパンダー）
-            with st.expander("📁 取得した直近のデータを表示"):
-                st.dataframe(data.tail(10))
-
-        else:
-            st.error("データのフォーマットエラーが発生しました。別の銘柄コードをお試しください。")
+    if success:
+        return jsonify({"status": "success", "details": result}), 200
     else:
-        st.error(f"「{ticker_symbol}」のデータが見つかりませんでした。正しい銘柄コード（例: 7203.T, AAPL, MSFT）を入力してください。")
+        return jsonify({"status": "error", "details": result}), 500
+
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", 5000))
+    logging.info(f"自動売買Webhookサーバーを起動します (ポート: {port})")
+    app.run(host="0.0.0.0", port=port)
