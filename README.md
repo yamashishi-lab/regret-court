@@ -1,1 +1,1 @@
-# regret-court
+# .gitignore
