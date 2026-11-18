@@ -1,4 +1,6 @@
-__pycache__/
-.streamlit/
-.env
-*.pyc
+streamlit
+yfinance
+pandas
+pandas-ta
+plotly
+requests
