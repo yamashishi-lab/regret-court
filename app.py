@@ -1,52 +1,112 @@
 import streamlit as st
-from PIL import Image
+import yfinance as yf
+import pandas as pd
+import plotly.graph_objects as go
 
 # ページの設定
 st.set_page_config(
-    page_title="AI Video & News Detector",
-    page_icon="🛡️",
-    layout="centered"
+    page_title="株式アルゴリズム＆シグナル分析アプリ",
+    page_icon="📈",
+    layout="wide"
 )
 
-st.title("🛡️ AI動画・フェイクニュース判別ダッシュボード")
-st.write("YouTube動画やSNSのニュースが本物かAI生成かを見破るための分析ツールです。")
+st.title("📈 株式アルゴリズム＆シグナル分析アプリ")
+st.markdown("GitHubとStreamlitで構築した株価分析・シグナル検知ダッシュボードです。")
 
-# タブで機能を分ける
-tab1, tab2 = st.tabs(["🎬 YouTube/動画判定", "📰 ニュース・ファクトチェック"])
+# サイドバー：銘柄とパラメータの設定
+st.sidebar.header("⚙️ 設定パネル")
+ticker_symbol = st.sidebar.text_input("銘柄コード (日本株は末尾に .T)", "7203.T")
+short_window = st.sidebar.slider("短期移動平均線 (日)", 5, 50, 25)
+long_window = st.sidebar.slider("長期移動平均線 (日)", 20, 200, 75)
+period_option = st.sidebar.selectbox("取得期間", ["6mo", "1y", "2y", "5y"], index=1)
 
-with tab1:
-    st.subheader("動画のAI生成・ディープフェイク判定")
-    video_url = st.text_input("判定したいYouTubeのURLを入力してください", placeholder="https://www.youtube.com/watch?v=...")
-    
-    uploaded_image = st.file_uploader("または、動画のスクリーンショット画像をアップロード", type=["jpg", "png", "jpeg"])
+# データの取得関数（キャッシュを利用して高速化）
+@st.cache_data
+def load_data(ticker, period):
+    try:
+        df = yf.download(ticker, period=period)
+        return df
+    except Exception as e:
+        return None
 
-    if st.button("動画を解析する", key="analyze_video"):
-        if video_url or uploaded_image:
-            with st.spinner("AIモデルが映像の特徴量とアーティファクトを解析中..."):
-                # ここにAI判定ロジック（Pythonバックエンド）を記述
-                # モック結果
-                ai_score = 15.2 # AI生成確率 %
+if ticker_symbol:
+    with st.spinner(f"{ticker_symbol} のデータを取得中..."):
+        data = load_data(ticker_symbol, period_option)
+
+    if data is not None and not data.empty:
+        # yfinanceの仕様変更（マルチインデックスカラム）への対策
+        if isinstance(data.columns, pd.MultiIndex):
+            data.columns = data.columns.get_level_values(0)
+
+        # 必要なカラムが存在するか確認
+        if 'Close' in data.columns:
+            # 移動平均線の計算
+            data['SMA_Short'] = data['Close'].rolling(window=short_window).mean()
+            data['SMA_Long'] = data['Close'].rolling(window=long_window).mean()
+
+            # 最新のデータ値
+            latest_close = float(data['Close'].iloc[-1])
+            prev_short = float(data['SMA_Short'].iloc[-2])
+            prev_long = float(data['SMA_Long'].iloc[-2])
+            curr_short = float(data['SMA_Short'].iloc[-1])
+            curr_long = float(data['SMA_Long'].iloc[-1])
+
+            # シグナル判定ロジック（ゴールデンクロス / デッドクロス）
+            signal = "様子見 (Hold) ⏳"
+            signal_color = "normal"
+            if prev_short <= prev_long and curr_short > curr_long:
+                signal = "買いシグナル (Buy) 🚀"
+                signal_color = "inverse"
+            elif prev_short >= prev_long and curr_short < curr_long:
+                signal = "売りシグナル (Sell) ⚠️"
+                signal_color = "off"
+
+            # 画面上部への結果表示
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric(label="対象銘柄", value=ticker_symbol.upper())
+            with col2:
+                st.metric(label="判定シグナル", value=signal)
+
+            st.subheader("📊 株価チャート & 移動平均線")
+
+            # Plotlyによるインタラクティブなチャート描画
+            fig = go.Figure()
             
-            st.metric(label="AI生成確率", value=f"{ai_score}%")
-            if ai_score < 40:
-                st.success("🟢 【判定: 実写（リアル）】不自然な歪みやAI特有のテクスチャは検出されませんでした。")
-            elif ai_score < 70:
-                st.warning("🟡 【判定: 要注意】一部にAI生成の兆候や編集の痕跡があります。")
-            else:
-                st.error("🔴 【判定: AI生成の可能性大】ディープフェイクや生成AIで作られた映像の可能性が非常に高いです。")
-        else:
-            st.warning("URLまたは画像をいづれか入力してください。")
-
-with tab2:
-    st.subheader("ニュース・SNS文面のファクトチェック")
-    news_text = st.text_area("検証したいニュースの文章やSNSの投稿文を入力してください")
-    
-    if st.button("信頼性をサーチする", key="analyze_news"):
-        if news_text:
-            with st.spinner("信頼できるニュースソースや過去の情報をクロスリファレンス中..."):
-                # ここにWeb検索やLLMによる検証ロジックを記述
-                pass
+            # 終値ライン
+            fig.add_trace(go.Scatter(
+                x=data.index, y=data['Close'], 
+                name='終値 (Close)', 
+                line=dict(color='#29b5e8', width=1.5)
+            ))
+            # 短期移動平均線
+            fig.add_trace(go.Scatter(
+                x=data.index, y=data['SMA_Short'], 
+                name=f'短期 SMA ({short_window})', 
+                line=dict(color='#ffaa00', width=1.5)
+            ))
+            # 長期移動平均線
+            fig.add_trace(go.Scatter(
+                x=data.index, y=data['SMA_Long'], 
+                name=f'長期 SMA ({long_window})', 
+                line=dict(color='#ff4b4b', width=1.5)
+            ))
             
-            st.info("ℹ️ 【クロスリファレンス結果】主要メディアでの一致報道：なし。拡散傾向：誤情報の可能性に注意が必要です。")
+            fig.update_layout(
+                xaxis_title="日付",
+                yaxis_title="株価",
+                template="plotly_dark",
+                hovermode="x unified",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+
+            # 生データのプレビュー（エキスパンダー）
+            with st.expander("📁 取得した直近のデータを表示"):
+                st.dataframe(data.tail(10))
+
         else:
-            st.warning("文章を入力してください。")
+            st.error("データのフォーマットエラーが発生しました。別の銘柄コードをお試しください。")
+    else:
+        st.error(f"「{ticker_symbol}」のデータが見つかりませんでした。正しい銘柄コード（例: 7203.T, AAPL, MSFT）を入力してください。")
